@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, Users } from 'lucide-react';
-import Peer from 'simple-peer';
-import { io, Socket } from 'socket.io-client';
+import { Video, VideoOff, Mic, MicOff, PhoneOff, Users, Copy, Check } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 interface VideoCallProps {
   roomId: string;
@@ -11,114 +10,43 @@ interface VideoCallProps {
 
 const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) => {
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [peers, setPeers] = useState<{ [key: string]: Peer.Instance }>({});
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
-  const [participants, setParticipants] = useState<string[]>([]);
+  const [participants, setParticipants] = useState<string[]>([userName]);
+  const [copied, setCopied] = useState(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const socketRef = useRef<Socket | null>(null);
-  const peersRef = useRef<{ [key: string]: Peer.Instance }>({});
 
   useEffect(() => {
-    // Initialize socket connection
-    socketRef.current = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001');
-    
-    // Get user media
-    navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    }).then(stream => {
-      setStream(stream);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+    // Initialize camera and microphone
+    const initializeMedia = async () => {
+      try {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+        
+        setStream(mediaStream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = mediaStream;
+        }
+        
+        toast.success('Camera and microphone connected');
+      } catch (err) {
+        console.error('Error accessing media devices:', err);
+        toast.error('Failed to access camera/microphone. Please check permissions.');
       }
-      
-      // Join room
-      socketRef.current?.emit('join-room', { roomId, userName });
-    }).catch(err => {
-      console.error('Error accessing media devices:', err);
-    });
+    };
 
-    // Socket event listeners
-    socketRef.current.on('user-joined', ({ userId, userName: newUserName }) => {
-      setParticipants(prev => [...prev, newUserName]);
-      
-      if (stream) {
-        const peer = new Peer({
-          initiator: true,
-          trickle: false,
-          stream: stream
-        });
+    initializeMedia();
 
-        peer.on('signal', signal => {
-          socketRef.current?.emit('signal', { userId, signal });
-        });
-
-        peer.on('stream', remoteStream => {
-          // Handle remote stream
-          const video = document.getElementById(`video-${userId}`) as HTMLVideoElement;
-          if (video) {
-            video.srcObject = remoteStream;
-          }
-        });
-
-        peersRef.current[userId] = peer;
-        setPeers(prev => ({ ...prev, [userId]: peer }));
-      }
-    });
-
-    socketRef.current.on('user-left', ({ userId, userName: leftUserName }) => {
-      setParticipants(prev => prev.filter(name => name !== leftUserName));
-      
-      if (peersRef.current[userId]) {
-        peersRef.current[userId].destroy();
-        delete peersRef.current[userId];
-        setPeers(prev => {
-          const newPeers = { ...prev };
-          delete newPeers[userId];
-          return newPeers;
-        });
-      }
-    });
-
-    socketRef.current.on('signal', ({ userId, signal }) => {
-      if (peersRef.current[userId]) {
-        peersRef.current[userId].signal(signal);
-      } else if (stream) {
-        const peer = new Peer({
-          initiator: false,
-          trickle: false,
-          stream: stream
-        });
-
-        peer.on('signal', signal => {
-          socketRef.current?.emit('signal', { userId, signal });
-        });
-
-        peer.on('stream', remoteStream => {
-          const video = document.getElementById(`video-${userId}`) as HTMLVideoElement;
-          if (video) {
-            video.srcObject = remoteStream;
-          }
-        });
-
-        peer.signal(signal);
-        peersRef.current[userId] = peer;
-        setPeers(prev => ({ ...prev, [userId]: peer }));
-      }
-    });
-
+    // Cleanup function
     return () => {
-      // Cleanup
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
-      
-      Object.values(peersRef.current).forEach(peer => peer.destroy());
-      socketRef.current?.disconnect();
     };
-  }, [roomId, userName]);
+  }, []);
 
   const toggleVideo = () => {
     if (stream) {
@@ -126,6 +54,7 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoEnabled(videoTrack.enabled);
+        toast.success(videoTrack.enabled ? 'Camera turned on' : 'Camera turned off');
       }
     }
   };
@@ -136,7 +65,19 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioEnabled(audioTrack.enabled);
+        toast.success(audioTrack.enabled ? 'Microphone turned on' : 'Microphone turned off');
       }
+    }
+  };
+
+  const copyRoomId = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      toast.success('Room ID copied to clipboard');
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      toast.error('Failed to copy room ID');
     }
   };
 
@@ -145,10 +86,7 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
       stream.getTracks().forEach(track => track.stop());
     }
     
-    Object.values(peersRef.current).forEach(peer => peer.destroy());
-    socketRef.current?.emit('leave-room', { roomId });
-    socketRef.current?.disconnect();
-    
+    toast.success('Call ended');
     onEndCall();
   };
 
@@ -160,19 +98,28 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
           <div className="flex items-center space-x-3">
             <Users className="h-5 w-5 text-white" />
             <span className="text-white font-medium">
-              {participants.length + 1} participant{participants.length !== 0 ? 's' : ''}
+              {participants.length} participant{participants.length !== 1 ? 's' : ''}
             </span>
           </div>
-          <div className="text-white text-sm">
-            Room: {roomId}
+          <div className="flex items-center space-x-3">
+            <div className="text-white text-sm">
+              Room: {roomId}
+            </div>
+            <button
+              onClick={copyRoomId}
+              className="flex items-center space-x-1 px-3 py-1 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg text-sm transition-colors"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              <span>{copied ? 'Copied' : 'Copy ID'}</span>
+            </button>
           </div>
         </div>
       </div>
 
       {/* Video Grid */}
-      <div className="pt-16 pb-20 h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+      <div className="pt-16 pb-20 h-full flex items-center justify-center p-4">
         {/* Local Video */}
-        <div className="relative bg-neutral-800 rounded-lg overflow-hidden">
+        <div className="relative bg-neutral-800 rounded-lg overflow-hidden max-w-4xl w-full h-full max-h-96">
           <video
             ref={localVideoRef}
             autoPlay
@@ -180,30 +127,28 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
             playsInline
             className="w-full h-full object-cover"
           />
-          <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
-            You
+          <div className="absolute bottom-4 left-4 bg-black bg-opacity-50 text-white px-3 py-1 rounded-lg text-sm">
+            {userName} (You)
           </div>
           {!isVideoEnabled && (
             <div className="absolute inset-0 bg-neutral-700 flex items-center justify-center">
-              <VideoOff className="h-12 w-12 text-neutral-400" />
+              <div className="text-center">
+                <VideoOff className="h-16 w-16 text-neutral-400 mx-auto mb-2" />
+                <p className="text-neutral-400">Camera is off</p>
+              </div>
             </div>
           )}
-        </div>
-
-        {/* Remote Videos */}
-        {Object.keys(peers).map((userId, index) => (
-          <div key={userId} className="relative bg-neutral-800 rounded-lg overflow-hidden">
-            <video
-              id={`video-${userId}`}
-              autoPlay
-              playsInline
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
-              {participants[index] || `User ${index + 1}`}
-            </div>
+          
+          {/* Waiting for participants overlay */}
+          <div className="absolute top-4 left-4 right-4 bg-black bg-opacity-50 text-white p-3 rounded-lg">
+            <p className="text-center">
+              Waiting for other participants to join...
+            </p>
+            <p className="text-center text-sm text-neutral-300 mt-1">
+              Share the Room ID: <span className="font-mono font-bold">{roomId}</span>
+            </p>
           </div>
-        ))}
+        </div>
       </div>
 
       {/* Controls */}
@@ -211,40 +156,49 @@ const VideoCall: React.FC<VideoCallProps> = ({ roomId, userName, onEndCall }) =>
         <div className="flex items-center justify-center space-x-4">
           <button
             onClick={toggleAudio}
-            className={`p-3 rounded-full transition-colors ${
+            className={`p-4 rounded-full transition-colors ${
               isAudioEnabled
                 ? 'bg-neutral-600 hover:bg-neutral-500 text-white'
                 : 'bg-error-600 hover:bg-error-700 text-white'
             }`}
+            title={isAudioEnabled ? 'Mute microphone' : 'Unmute microphone'}
           >
             {isAudioEnabled ? (
-              <Mic className="h-5 w-5" />
+              <Mic className="h-6 w-6" />
             ) : (
-              <MicOff className="h-5 w-5" />
+              <MicOff className="h-6 w-6" />
             )}
           </button>
 
           <button
             onClick={toggleVideo}
-            className={`p-3 rounded-full transition-colors ${
+            className={`p-4 rounded-full transition-colors ${
               isVideoEnabled
                 ? 'bg-neutral-600 hover:bg-neutral-500 text-white'
                 : 'bg-error-600 hover:bg-error-700 text-white'
             }`}
+            title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
           >
             {isVideoEnabled ? (
-              <Video className="h-5 w-5" />
+              <Video className="h-6 w-6" />
             ) : (
-              <VideoOff className="h-5 w-5" />
+              <VideoOff className="h-6 w-6" />
             )}
           </button>
 
           <button
             onClick={endCall}
-            className="p-3 bg-error-600 hover:bg-error-700 text-white rounded-full transition-colors"
+            className="p-4 bg-error-600 hover:bg-error-700 text-white rounded-full transition-colors"
+            title="End call"
           >
-            <PhoneOff className="h-5 w-5" />
+            <PhoneOff className="h-6 w-6" />
           </button>
+        </div>
+        
+        <div className="text-center mt-3">
+          <p className="text-neutral-400 text-sm">
+            Share Room ID <span className="font-mono font-bold text-white">{roomId}</span> with others to join
+          </p>
         </div>
       </div>
     </div>
